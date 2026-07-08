@@ -32,3 +32,8 @@ dist/
 *.sqlite3
 /data/
 /logs/
+
+# Archivos de contexto para el asistente de IA (nunca se suben al repo)
+AGENTS.md
+CLAUDE.md
+START_HERE.md
