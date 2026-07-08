@@ -5,7 +5,7 @@ ecosistema quedan desactualizadas con frecuencia frente a sus versiones más rec
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import TracebackType
 
 
@@ -50,14 +50,33 @@ class FakeResponse:
 
 
 class FakeClientSession:
-    """Doble de prueba de `aiohttp.ClientSession`: enruta `.get(url)` por URL exacta."""
+    """Doble de prueba de `aiohttp.ClientSession`: enruta `.get(url)` por URL exacta.
 
-    def __init__(self, responses_by_url: Mapping[str, FakeResponse]) -> None:
-        self._responses_by_url = dict(responses_by_url)
+    Cada URL puede registrar una única respuesta (se reutiliza en todas las
+    llamadas, como en los tests de caché) o una secuencia de respuestas que se
+    van consumiendo en orden —imprescindible para simular reintentos, donde la
+    misma URL responde distinto en cada intento— reutilizando la última una
+    vez agotada la secuencia.
+    """
+
+    def __init__(
+        self, responses_by_url: Mapping[str, FakeResponse | Sequence[FakeResponse]]
+    ) -> None:
+        self._queues: dict[str, list[FakeResponse]] = {
+            url: list(response) if isinstance(response, Sequence) else [response]
+            for url, response in responses_by_url.items()
+        }
         self.requested_urls: list[str] = []
+        self.requested_headers: list[Mapping[str, str] | None] = []
 
-    def get(self, url: str, timeout: object = None) -> FakeResponse:
+    def get(
+        self, url: str, timeout: object = None, headers: Mapping[str, str] | None = None
+    ) -> FakeResponse:
         self.requested_urls.append(url)
-        if url not in self._responses_by_url:
+        self.requested_headers.append(headers)
+        queue = self._queues.get(url)
+        if not queue:
             raise AssertionError(f"No hay respuesta doble registrada para {url}")
-        return self._responses_by_url[url]
+        if len(queue) > 1:
+            return queue.pop(0)
+        return queue[0]
