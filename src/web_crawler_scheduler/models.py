@@ -183,12 +183,17 @@ class CheckpointState:
 
     Es la única estructura mutable del módulo: se actualiza en vivo durante el
     crawl y se vuelca a disco periódicamente para poder reanudar tras un fallo.
+
+    No conserva los timestamps de última petición por dominio del rate
+    limiter: si el proceso estuvo detenido, cualquier demora mínima razonable
+    (segundos) ya ha transcurrido de sobra en tiempo real, así que reanudar
+    con el rate limiter "en frío" es correcto y evita serializar estado cuyo
+    origen temporal (`time.monotonic()`) no sobrevive a un reinicio del proceso.
     """
 
     visited_hashes: set[str] = field(default_factory=set)
     frontier_entries: list[FrontierEntry] = field(default_factory=list)
     pages_crawled: int = 0
-    domain_last_request_epoch: dict[str, float] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -203,7 +208,6 @@ class CheckpointState:
                 for e in self.frontier_entries
             ],
             "pages_crawled": self.pages_crawled,
-            "domain_last_request_epoch": self.domain_last_request_epoch,
         }
 
     @staticmethod
@@ -220,7 +224,4 @@ class CheckpointState:
                 for e in data["frontier_entries"]
             ],
             pages_crawled=int(data["pages_crawled"]),
-            domain_last_request_epoch={
-                str(k): float(v) for k, v in data["domain_last_request_epoch"].items()
-            },
         )
