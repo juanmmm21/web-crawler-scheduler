@@ -241,13 +241,6 @@ HTTP responses, connection errors and timeouts deterministically.
 - **`mypy` fails under `tests/`:** expected — only `src/` is type-checked in
   `--strict` mode; the test doubles use deliberately looser typing.
 
-## Roadmap
-
-- [ ] `sitemap.xml` support as an additional source of seed URLs.
-- [ ] Explicit content negotiation (reject non-HTML MIME types before
-      downloading the full body).
-- [ ] Pluggable checkpoint backend (today: local JSON file).
-
 ## License
 
 MIT — see [`LICENSE`](./LICENSE).
