@@ -1,83 +1,81 @@
 # web-crawler-scheduler
 
-**Proyecto 1/10 del ecosistema [`beacon-search-engine`](https://github.com/juanmmm21/beacon-search-engine)** — categoría *Ingesta*.
-Repositorio: [`github.com/juanmmm21/web-crawler-scheduler`](https://github.com/juanmmm21/web-crawler-scheduler)
+**Project 1/10 of the [`beacon-search-engine`](https://github.com/juanmmm21/beacon-search-engine) ecosystem** — *Ingestion* category.
+Repository: [`github.com/juanmmm21/web-crawler-scheduler`](https://github.com/juanmmm21/web-crawler-scheduler)
 
-Un crawler web asíncrono y educado: recorre la web a partir de un conjunto de
-URLs semilla, respeta `robots.txt` y aplica límites de *rate* por dominio,
-mantiene una frontera de URLs priorizada y deduplicada, y produce como
-resultado el HTML crudo de cada página junto con su grafo de enlaces
-salientes — todo implementado desde cero, sin Scrapy ni ninguna librería de
-crawling de terceros.
+An asynchronous, polite web crawler: it walks the web starting from a set of
+seed URLs, respects `robots.txt` and per-domain rate limits, maintains a
+prioritized and deduplicated URL frontier, and produces the raw HTML of each
+page along with its outbound link graph — all implemented from scratch, with
+no Scrapy or any third-party crawling library.
 
-## Qué problema resuelve
+## What problem it solves
 
-Cualquier motor de búsqueda necesita primero un corpus. Obtenerlo de forma
-correcta no es trivial: hay que evitar crawlear la misma URL dos veces por
-variaciones triviales (mayúsculas, puerto por defecto, orden de query
-params...), no saturar ni tumbar los servidores ajenos, recuperarse de fallos
-de red transitorios sin perder progreso, y sobrevivir a HTML roto o
-inalcanzable sin que se caiga todo el proceso. Este proyecto resuelve
-exactamente esa capa: la ingesta educada y resiliente de páginas web.
+Any search engine needs a corpus first. Getting one right is not trivial: you
+have to avoid crawling the same URL twice due to trivial variations
+(uppercase, default port, query parameter order...), avoid overloading or
+taking down third-party servers, recover from transient network failures
+without losing progress, and survive broken or unreachable HTML without the
+whole process crashing. This project solves exactly that layer: polite,
+resilient ingestion of web pages.
 
-## Rol en `beacon-search-engine`
+## Role in `beacon-search-engine`
 
 ```text
                         ┌──────────────────────────┐
-                        │  web-crawler-scheduler    │   (este proyecto)
-                        │  URLs semilla → páginas   │
+                        │  web-crawler-scheduler    │   (this project)
+                        │  seed URLs → pages        │
                         └────────────┬─────────────┘
-                                     │ pages.jsonl (HTML crudo + metadatos)
-                                     │ link_graph.jsonl (grafo de enlaces)
+                                     │ pages.jsonl (raw HTML + metadata)
+                                     │ link_graph.jsonl (outbound link graph)
                     ┌────────────────┴────────────────┐
                     ▼                                 ▼
       html-content-extractor              pagerank-link-analysis
-      (limpia el HTML → texto)            (autoridad de página vía el grafo)
+      (cleans HTML → text)                (page authority via the graph)
                     │
                     ▼
       inverted-index-builder → index-compression-codec → bm25-ranking-engine
                                                                    │
                                                                    ▼
-                                                    (converge en beacon-search-console)
+                                                    (converges in beacon-search-console)
 ```
 
-Es el punto de entrada de todo el ecosistema: sin páginas crawleadas no hay
-corpus, y sin corpus no hay nada que indexar ni rankear.
+It's the entry point of the whole ecosystem: without crawled pages there is
+no corpus, and without a corpus there is nothing to index or rank.
 
-## Objetivo y skills demostradas
+## Goal and skills demonstrated
 
-- Programación asíncrona real con `asyncio`/`aiohttp`: miles de conexiones
-  concurrentes controladas, no un bucle secuencial disfrazado de async.
-- Gestión de una cola de prioridad (frontera BFS por defecto, priorizable).
-- Cumplimiento ético de `robots.txt` (incluyendo `Crawl-delay` fraccionario,
-  no soportado por `urllib.robotparser` de la librería estándar).
-- Backoff exponencial con *jitter* ante errores transitorios de red.
-- Deduplicación de URLs por hash normalizado a escala.
-- Checkpointing y reanudación de trabajos de larga duración sin perder estado.
+- Real asynchronous programming with `asyncio`/`aiohttp`: thousands of
+  controlled concurrent connections, not a sequential loop dressed up as async.
+- Managing a priority queue (BFS frontier by default, prioritizable).
+- Ethical `robots.txt` compliance (including fractional `Crawl-delay`, which
+  the standard library's `urllib.robotparser` does not support).
+- Exponential backoff with jitter on transient network errors.
+- URL deduplication via normalized hashing at scale.
+- Checkpointing and resuming long-running jobs without losing state.
 
-## Cómo funciona
+## How it works
 
-1. Se cargan las URLs semilla en la **frontera** (`PriorityFrontier`), una
-   cola de prioridad con desempate FIFO — por defecto ordena por profundidad
-   de descubrimiento (BFS).
-2. Un bucle principal lanza tareas concurrentes (hasta
-   `max_concurrent_requests`) que van sacando entradas de la frontera.
-3. Por cada URL: se comprueba deduplicación por hash normalizado
-   (`urlnorm`), se consulta `robots.txt` (`RobotsCache`, cacheado por
-   origen) y se adquiere hueco de *rate limiting* por dominio
-   (`DomainRateLimiter`, que respeta tanto la concurrencia máxima como el
-   `Crawl-delay` del sitio).
-4. Se descarga la página (`AiohttpFetcher`), con reintentos y backoff
-   exponencial ante 429/5xx/timeouts; un 4xx permanente o el agotamiento de
-   reintentos descarta la URL de forma explícita y auditable.
-5. Si la descarga tiene éxito, se extraen sus enlaces salientes
-   (`link_extractor`, vía `html.parser` de la librería estándar) y se
-   encolan los nuevos, respetando `max_depth`.
-6. Todo se persiste en JSONL (`pages.jsonl`, `link_graph.jsonl`,
-   `discarded.jsonl`) y, si se configura, se vuelca un checkpoint periódico
-   para poder reanudar el crawl tras una interrupción.
+1. Seed URLs are loaded into the **frontier** (`PriorityFrontier`), a
+   priority queue with FIFO tie-breaking — by default ordered by discovery
+   depth (BFS).
+2. A main loop spawns concurrent tasks (up to `max_concurrent_requests`)
+   that pull entries off the frontier.
+3. For each URL: deduplication is checked via normalized hash (`urlnorm`),
+   `robots.txt` is consulted (`RobotsCache`, cached per origin), and a slot
+   is acquired from the per-domain rate limiter (`DomainRateLimiter`, which
+   enforces both maximum concurrency and the site's `Crawl-delay`).
+4. The page is downloaded (`AiohttpFetcher`), with retries and exponential
+   backoff on 429/5xx/timeouts; a permanent 4xx or exhausted retries
+   discards the URL explicitly and auditably.
+5. On a successful download, outbound links are extracted
+   (`link_extractor`, via the standard library's `html.parser`) and new ones
+   are enqueued, respecting `max_depth`.
+6. Everything is persisted as JSONL (`pages.jsonl`, `link_graph.jsonl`,
+   `discarded.jsonl`) and, if configured, a periodic checkpoint is written so
+   the crawl can be resumed after an interruption.
 
-## Arquitectura
+## Architecture
 
 ```text
 src/web_crawler_scheduler/
@@ -85,21 +83,21 @@ src/web_crawler_scheduler/
 │                       # FrontierEntry, DiscardedUrl, CheckpointState, CrawlStats
 ├── protocols.py        # interfaces: RobotsPolicy, Frontier, Deduplicator,
 │                       # RateLimiter, PageFetcher
-├── urlnorm.py           # normalización de URLs + HashSetDeduplicator
-├── robots.py             # RobotsCache: fetch, parseo y caché de robots.txt por origen
-├── rate_limiter.py         # DomainRateLimiter: concurrencia y demora mínima por dominio
-├── frontier.py              # PriorityFrontier: cola de prioridad BFS con desempate FIFO
-├── fetcher.py                 # AiohttpFetcher: descarga con reintentos y backoff exponencial
-├── link_extractor.py            # extracción de <a href> de HTML crudo
-├── pipeline.py                    # CrawlPipeline: orquesta todo lo anterior
+├── urlnorm.py           # URL normalization + HashSetDeduplicator
+├── robots.py             # RobotsCache: fetching, parsing and per-origin caching of robots.txt
+├── rate_limiter.py         # DomainRateLimiter: per-domain concurrency and minimum delay
+├── frontier.py              # PriorityFrontier: BFS priority queue with FIFO tie-break
+├── fetcher.py                 # AiohttpFetcher: fetch with retries and exponential backoff
+├── link_extractor.py            # outbound <a href> extraction from raw HTML
+├── pipeline.py                    # CrawlPipeline: orchestrates everything above
 └── __main__.py                     # CLI (`crawl`, `stats`)
 ```
 
-Cada módulo se testea de forma aislada mediante los protocolos definidos en
-`protocols.py` y dobles de prueba en memoria (`tests/conftest.py`) — ningún
-test golpea la red real.
+Every module is tested in isolation via the interfaces defined in
+`protocols.py` and in-memory test doubles (`tests/conftest.py`) — no test
+hits the real network.
 
-## Requisitos e instalación
+## Requirements and installation
 
 - Python `>=3.11`
 
@@ -110,10 +108,10 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Uso (CLI)
+## Usage (CLI)
 
 ```bash
-# Crawl nuevo
+# Fresh crawl
 web-crawler-scheduler crawl \
   --seed https://example.com/ \
   --output-dir ./output \
@@ -123,27 +121,27 @@ web-crawler-scheduler crawl \
   --max-concurrent-per-domain 2 \
   --min-delay-seconds 1.0
 
-# Reanudar un crawl interrumpido (usa el checkpoint.json de --output-dir)
+# Resume an interrupted crawl (uses the checkpoint.json in --output-dir)
 web-crawler-scheduler crawl --seed https://example.com/ --output-dir ./output --resume
 
-# Estadísticas rápidas de un pages.jsonl ya crawleado
+# Quick stats on an already-crawled pages.jsonl
 web-crawler-scheduler stats ./output/pages.jsonl
 ```
 
-También puede invocarse como módulo: `python -m web_crawler_scheduler crawl ...`.
+It can also be invoked as a module: `python -m web_crawler_scheduler crawl ...`.
 
-Flags principales de `crawl`: `--seed` (repetible), `--seeds-file`,
-`--output-dir`, `--max-pages`, `--max-depth`, `--max-concurrent-requests`,
+Main `crawl` flags: `--seed` (repeatable), `--seeds-file`, `--output-dir`,
+`--max-pages`, `--max-depth`, `--max-concurrent-requests`,
 `--max-concurrent-per-domain`, `--min-delay-seconds`, `--timeout-seconds`,
 `--max-retries`, `--backoff-base-seconds`, `--backoff-max-seconds`,
 `--user-agent`, `--ignore-robots`, `--checkpoint-every`, `--resume`.
 
-## Formatos de datos
+## Data formats
 
-`--output-dir` produce tres ficheros JSONL (uno por línea = un registro) y un
+`--output-dir` produces three JSONL files (one line = one record) and a
 checkpoint JSON:
 
-**`pages.jsonl`** — una página crawleada con éxito:
+**`pages.jsonl`** — a successfully crawled page:
 
 ```json
 {
@@ -158,30 +156,30 @@ checkpoint JSON:
 }
 ```
 
-**`link_graph.jsonl`** — enlaces salientes de cada página (consumido por
+**`link_graph.jsonl`** — outbound links per page (consumed by
 [`pagerank-link-analysis`](https://github.com/juanmmm21/pagerank-link-analysis)):
 
 ```json
 {"url": "http://example.com/", "outlinks": ["http://example.com/a", "http://example.com/b"]}
 ```
 
-**`discarded.jsonl`** — URLs descartadas, para auditoría:
+**`discarded.jsonl`** — discarded URLs, for auditing:
 
 ```json
 {
   "url": "http://example.com/private",
-  "reason": "bloqueada por robots.txt",
+  "reason": "blocked by robots.txt",
   "outcome": "robots_disallowed",
   "attempts": 0,
   "discarded_at": "2026-07-08T12:00:00+00:00"
 }
 ```
 
-**`checkpoint.json`** — estado interno para reanudar (hashes visitados,
-frontera pendiente y páginas crawleadas); formato interno, no pensado para
-consumo externo.
+**`checkpoint.json`** — internal state used to resume (visited hashes,
+pending frontier and pages crawled); internal format, not meant for external
+consumption.
 
-## Uso programático
+## Programmatic usage
 
 ```python
 import asyncio
@@ -212,7 +210,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-## Desarrollo
+## Development
 
 ```bash
 pytest
@@ -220,35 +218,36 @@ ruff check .
 mypy --strict src/
 ```
 
-Los tests no realizan peticiones de red reales: `tests/conftest.py` define
-`FakeClientSession`/`FakeResponse`, dobles de prueba que implementan la misma
-superficie que usa el código (`.get()` como *context manager* asíncrono) para
-simular respuestas HTTP, errores de conexión y timeouts de forma determinista.
+Tests never perform real network requests: `tests/conftest.py` defines
+`FakeClientSession`/`FakeResponse`, test doubles that implement the same
+surface used by the code (`.get()` as an async context manager) to simulate
+HTTP responses, connection errors and timeouts deterministically.
 
 ## Troubleshooting
 
-- **El crawl no avanza / va muy lento:** revisa `--min-delay-seconds` y
-  `--max-concurrent-per-domain` — si todas las semillas son del mismo
-  dominio, el *rate limiting* por dominio es el cuello de botella esperado
-  (es la política educada, no un bug).
-- **`RuntimeError: release() llamado para un dominio sin acquire() previo`:**
-  indica un uso incorrecto de `DomainRateLimiter` fuera de `CrawlPipeline`
-  (llamar a `release()` sin un `acquire()` previo para ese dominio).
-- **Un sitio nunca se crawlea:** comprueba `discarded.jsonl` — si el
-  `outcome` es `robots_disallowed`, el propio `robots.txt` del sitio lo
-  prohíbe; con `server_error`/`timeout` repetido, el origen puede estar
-  caído (ver sección 5xx de `robots.py`, que asume "todo prohibido" ante un
-  `robots.txt` inalcanzable, no solo ante las páginas).
-- **`mypy` falla en `tests/`:** es esperado — solo `src/` se tipa en modo
-  `--strict`; los dobles de prueba usan tipado más laxo deliberadamente.
+- **The crawl is not progressing / is very slow:** check
+  `--min-delay-seconds` and `--max-concurrent-per-domain` — if all seeds are
+  on the same domain, per-domain rate limiting is the expected bottleneck
+  (it's the polite policy, not a bug).
+- **`RuntimeError: release() llamado para un dominio sin acquire() previo`**
+  (internal messages stay in Spanish, per project convention): indicates
+  incorrect use of `DomainRateLimiter` outside of `CrawlPipeline` (calling
+  `release()` without a prior `acquire()` for that domain).
+- **A site never gets crawled:** check `discarded.jsonl` — if the `outcome`
+  is `robots_disallowed`, the site's own `robots.txt` forbids it; with
+  repeated `server_error`/`timeout`, the origin may be down (see the 5xx
+  handling in `robots.py`, which assumes "everything forbidden" when
+  `robots.txt` itself is unreachable, not just individual pages).
+- **`mypy` fails under `tests/`:** expected — only `src/` is type-checked in
+  `--strict` mode; the test doubles use deliberately looser typing.
 
 ## Roadmap
 
-- [ ] Soporte de `sitemap.xml` como fuente adicional de URLs semilla.
-- [ ] Content negotiation explícita (rechazar tipos MIME no HTML antes de
-      descargar el cuerpo completo).
-- [ ] Backend de checkpoint pluggable (hoy: fichero JSON local).
+- [ ] `sitemap.xml` support as an additional source of seed URLs.
+- [ ] Explicit content negotiation (reject non-HTML MIME types before
+      downloading the full body).
+- [ ] Pluggable checkpoint backend (today: local JSON file).
 
-## Licencia
+## License
 
-MIT — ver [`LICENSE`](./LICENSE).
+MIT — see [`LICENSE`](./LICENSE).
