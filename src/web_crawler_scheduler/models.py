@@ -158,6 +158,14 @@ class FrontierEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class CrawlStats:
+    """Resumen final de una ejecución (o reanudación) de crawl."""
+
+    pages_crawled: int
+    urls_discarded: int
+
+
+@dataclass(frozen=True, slots=True)
 class DiscardedUrl:
     """Una URL descartada definitivamente (robots, agotar reintentos, etc.), para auditoría."""
 
