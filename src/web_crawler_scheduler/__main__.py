@@ -1,4 +1,5 @@
-"""CLI de `web-crawler-scheduler`: `crawl` (con reanudación) y `stats` sobre un `pages.jsonl`."""
+"""CLI de `web-crawler-scheduler`: `crawl` (con reanudación), `stats` sobre un
+`pages.jsonl` y `recrawl` (revisita según la tasa de cambio de cada página)."""
 
 from __future__ import annotations
 
@@ -8,12 +9,17 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from datetime import timedelta
 from pathlib import Path
 
 import aiohttp
 
+from web_crawler_scheduler.fetcher import AiohttpFetcher
 from web_crawler_scheduler.models import CrawlConfig, CrawlStats
 from web_crawler_scheduler.pipeline import CrawlPipeline
+from web_crawler_scheduler.rate_limiter import DomainRateLimiter
+from web_crawler_scheduler.recrawl import ChangeRatePolicy, RecrawlPipeline, RecrawlStore
+from web_crawler_scheduler.robots import RobotsCache
 
 logger = logging.getLogger("web_crawler_scheduler")
 
@@ -64,7 +70,79 @@ def _build_parser() -> argparse.ArgumentParser:
     stats_parser = subparsers.add_parser("stats", help="Muestra estadísticas de un pages.jsonl")
     stats_parser.add_argument("pages_path", type=Path)
 
+    recrawl_parser = subparsers.add_parser(
+        "recrawl", help="Revisita las páginas vencidas según su tasa de cambio"
+    )
+    recrawl_parser.add_argument("--state", type=Path, required=True, help="recrawl_state.json")
+    recrawl_parser.add_argument(
+        "--seed-pages", type=Path, default=None, help="pages.jsonl de un crawl previo a registrar"
+    )
+    recrawl_parser.add_argument("--output-dir", type=Path, required=True)
+    recrawl_parser.add_argument("--max-pages", type=int, default=None)
+    recrawl_parser.add_argument("--max-concurrent-per-domain", type=int, default=2)
+    recrawl_parser.add_argument("--min-delay-seconds", type=float, default=1.0)
+    recrawl_parser.add_argument("--timeout-seconds", type=float, default=15.0)
+    recrawl_parser.add_argument("--initial-interval-hours", type=float, default=24.0)
+    recrawl_parser.add_argument("--min-interval-hours", type=float, default=1.0)
+    recrawl_parser.add_argument("--max-interval-days", type=float, default=30.0)
+    recrawl_parser.add_argument(
+        "--user-agent",
+        default="BeaconCrawler/0.1 (+https://github.com/juanmmm21/web-crawler-scheduler)",
+    )
+
     return parser
+
+
+async def _recrawl(args: argparse.Namespace, store: RecrawlStore, policy: ChangeRatePolicy) -> str:
+    async with aiohttp.ClientSession() as session:
+        pipeline = RecrawlPipeline(
+            store,
+            AiohttpFetcher(session, user_agent=args.user_agent),
+            DomainRateLimiter(
+                max_concurrent_per_domain=args.max_concurrent_per_domain,
+                default_min_delay_seconds=args.min_delay_seconds,
+            ),
+            RobotsCache(session, timeout_seconds=args.timeout_seconds),
+            policy=policy,
+            user_agent=args.user_agent,
+            timeout_seconds=args.timeout_seconds,
+        )
+        report = await pipeline.run(
+            args.output_dir / "pages.jsonl",
+            args.output_dir / "removed.jsonl",
+            max_pages=args.max_pages,
+        )
+    return (
+        f"Revisitadas {report.checked}: {report.changed} cambiadas, "
+        f"{report.not_modified} sin cambios (304), {report.unchanged_body} sin cambios (hash), "
+        f"{report.removed} desaparecidas, {report.failed} fallidas, "
+        f"{report.robots_disallowed} bloqueadas por robots.txt"
+    )
+
+
+def _run_recrawl(args: argparse.Namespace) -> int:
+    try:
+        policy = ChangeRatePolicy(
+            initial_interval=timedelta(hours=args.initial_interval_hours),
+            min_interval=timedelta(hours=args.min_interval_hours),
+            max_interval=timedelta(days=args.max_interval_days),
+        )
+        store = RecrawlStore.load(args.state) if args.state.exists() else RecrawlStore()
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+    if args.seed_pages is not None:
+        if not args.seed_pages.exists():
+            print(f"Error: no existe {args.seed_pages}", file=sys.stderr)
+            return 2
+        print(f"Páginas nuevas registradas: {store.seed_from_pages(args.seed_pages, policy)}")
+    try:
+        print(asyncio.run(_recrawl(args, store, policy)))
+    finally:
+        # El estado se guarda también si el re-rastreo se interrumpe: las
+        # visitas ya hechas no se repiten en la siguiente ejecución.
+        store.save(args.state)
+    return 0
 
 
 def _load_seed_urls(seeds: list[str], seeds_file: Path | None) -> tuple[str, ...]:
@@ -194,6 +272,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_crawl(args)
     if args.command == "stats":
         return _run_stats(args)
+    if args.command == "recrawl":
+        return _run_recrawl(args)
 
     parser.error(f"Comando desconocido: {args.command}")
     return 2  # inalcanzable: parser.error() termina el proceso con sys.exit()

@@ -95,3 +95,20 @@ class TestRunStats:
         assert "Páginas: 3" in output
         assert "HTTP 200: 2" in output
         assert "HTTP 404: 1" in output
+
+
+def test_recrawl_cli_rejects_missing_seed_pages(tmp_path: Path) -> None:
+    from web_crawler_scheduler.__main__ import main
+
+    exit_code = main(
+        [
+            "recrawl",
+            "--state",
+            str(tmp_path / "state.json"),
+            "--seed-pages",
+            str(tmp_path / "missing.jsonl"),
+            "--output-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert exit_code == 2
