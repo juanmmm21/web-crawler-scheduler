@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import random
+from http import HTTPStatus
 
 import aiohttp
 
-from web_crawler_scheduler.models import FetchResult
+from web_crawler_scheduler.models import CacheValidators, FetchResult
 
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
@@ -22,11 +23,17 @@ _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 class FetchError(Exception):
     """Se agotaron los reintentos (o el error era permanente) al descargar una URL."""
 
-    def __init__(self, url: str, reason: str, attempts: int) -> None:
+    def __init__(
+        self, url: str, reason: str, attempts: int, status_code: int | None = None
+    ) -> None:
         super().__init__(f"No se pudo descargar {url} tras {attempts} intento(s): {reason}")
         self.url = url
         self.reason = reason
         self.attempts = attempts
+        self.status_code = status_code
+        """Estado HTTP de la última respuesta, o `None` si no hubo respuesta
+        (timeout, conexión rechazada). El re-rastreo lo usa para distinguir
+        una página que ya no existe (404/410) de un fallo transitorio."""
 
 
 class AiohttpFetcher:
@@ -52,9 +59,17 @@ class AiohttpFetcher:
         self._backoff_max_seconds = backoff_max_seconds
         self._user_agent = user_agent
 
-    async def fetch(self, url: str, timeout_seconds: float) -> FetchResult:
+    async def fetch(
+        self, url: str, timeout_seconds: float, validators: CacheValidators | None = None
+    ) -> FetchResult:
+        """Descarga `url`. Con `validators`, la petición es condicional
+        (`If-None-Match` / `If-Modified-Since`) y un `304 Not Modified` vuelve
+        como `FetchResult` con `status_code=304` y cuerpo vacío: el servidor
+        confirma que la página no cambió sin volver a enviarla."""
         timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         headers = {"User-Agent": self._user_agent}
+        if validators is not None:
+            headers.update(validators.request_headers())
         last_error = "razón desconocida"
 
         for attempt in range(self._max_retries + 1):
@@ -64,11 +79,21 @@ class AiohttpFetcher:
                     if response.status in _RETRYABLE_STATUSES:
                         last_error = f"HTTP {response.status}"
                         if is_last_attempt:
-                            raise FetchError(url, last_error, attempt + 1)
+                            raise FetchError(url, last_error, attempt + 1, response.status)
                         await self._sleep_backoff(attempt)
                         continue
                     if response.status >= 400:
-                        raise FetchError(url, f"HTTP {response.status}", attempt + 1)
+                        raise FetchError(
+                            url, f"HTTP {response.status}", attempt + 1, response.status
+                        )
+                    if response.status == HTTPStatus.NOT_MODIFIED:
+                        return FetchResult(
+                            final_url=str(response.url),
+                            status_code=response.status,
+                            headers=dict(response.headers),
+                            body="",
+                            content_type=response.content_type,
+                        )
                     body = await response.text(errors="replace")
                     return FetchResult(
                         final_url=str(response.url),

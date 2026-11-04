@@ -147,6 +147,45 @@ class FetchResult:
     content_type: str | None
 
 
+def header_value(headers: dict[str, str], name: str) -> str | None:
+    """Valor de una cabecera HTTP sin distinguir mayúsculas (RFC 9110: los
+    nombres de cabecera no distinguen mayúsculas, y `dict(response.headers)`
+    conserva la grafía que mandó cada servidor)."""
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered:
+            return value
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class CacheValidators:
+    """Validadores HTTP de la última versión descargada de una página, para
+    pedir la siguiente de forma condicional."""
+
+    etag: str | None = None
+    last_modified: str | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return self.etag is None and self.last_modified is None
+
+    @staticmethod
+    def from_headers(headers: dict[str, str]) -> CacheValidators:
+        return CacheValidators(
+            etag=header_value(headers, "ETag"),
+            last_modified=header_value(headers, "Last-Modified"),
+        )
+
+    def request_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.etag is not None:
+            headers["If-None-Match"] = self.etag
+        if self.last_modified is not None:
+            headers["If-Modified-Since"] = self.last_modified
+        return headers
+
+
 @dataclass(frozen=True, slots=True)
 class FrontierEntry:
     """Una URL pendiente de crawlear, con su prioridad y profundidad de descubrimiento."""
