@@ -90,7 +90,8 @@ src/web_crawler_scheduler/
 ├── fetcher.py                 # AiohttpFetcher: fetch with retries and exponential backoff
 ├── link_extractor.py            # outbound <a href> extraction from raw HTML
 ├── pipeline.py                    # CrawlPipeline: orchestrates everything above
-└── __main__.py                     # CLI (`crawl`, `stats`)
+├── recrawl.py                      # change-rate recrawl scheduling + conditional GET
+└── __main__.py                     # CLI (`crawl`, `stats`, `recrawl`)
 ```
 
 Every module is tested in isolation via the interfaces defined in
@@ -136,6 +137,35 @@ Main `crawl` flags: `--seed` (repeatable), `--seeds-file`, `--output-dir`,
 `--max-retries`, `--backoff-base-seconds`, `--backoff-max-seconds`,
 `--user-agent`, `--ignore-robots`, `--checkpoint-every`, `--resume`.
 
+### Recrawling by change rate (from `0.2.0`)
+
+```bash
+# Register the pages of a previous crawl, then revisit only the ones that are due
+web-crawler-scheduler recrawl --state ./recrawl_state.json \
+  --seed-pages ./output/pages.jsonl --output-dir ./recrawl-001
+
+# Later runs only need the state file
+web-crawler-scheduler recrawl --state ./recrawl_state.json --output-dir ./recrawl-002 --max-pages 200
+```
+
+Every page gets its own revisit interval from its observed change rate. Change
+is modelled as a Poisson process (Cho and Garcia-Molina's model of crawler
+freshness): after `n` revisits that detected `X` changes, with mean interval
+`Ī`, the bias-reduced estimate is `λ = -ln((n - X + 0.5) / (n + 0.5)) / Ī`,
+and the next interval is the one that gives a 50% chance the page changed by
+then, `I = -ln(1 - 0.5) / λ`, clamped to `[--min-interval-hours,
+--max-interval-days]` and never more than twice the previous interval (so a
+stable page backs off 1, 2, 4... days instead of jumping straight to a month).
+
+Revisits are conditional: if the last response carried `ETag` or
+`Last-Modified`, the request sends `If-None-Match` / `If-Modified-Since` and a
+`304 Not Modified` confirms "unchanged" without transferring the body. Servers
+that send no validators (or ignore them and answer 200) are compared by the
+SHA-256 of the body. robots.txt, `Crawl-delay` and the per-domain rate limiter
+are the same components the normal crawl uses; a URL that robots.txt now
+disallows stops being revisited. Transient failures (timeouts, 5xx after
+retries) are retried after the minimum interval and do not count as a visit.
+
 ## Data formats
 
 `--output-dir` produces three JSONL files (one line = one record) and a
@@ -172,6 +202,39 @@ checkpoint JSON:
   "outcome": "robots_disallowed",
   "attempts": 0,
   "discarded_at": "2026-07-08T12:00:00+00:00"
+}
+```
+
+**Recrawl outputs** (`recrawl --output-dir`): `pages.jsonl` holds only the
+pages whose content changed, in exactly the `pages.jsonl` format above, so
+extraction and incremental indexing treat them like any other crawl output.
+`removed.jsonl` lists pages that answered 404 or 410, for the index to
+tombstone:
+
+```json
+{"url": "http://example.com/old", "status_code": 410}
+```
+
+**`recrawl_state.json`** — per-page recrawl state, sorted by URL and replaced
+atomically after every run (`format_version` is checked on load):
+
+```json
+{
+  "format_version": 1,
+  "pages": [
+    {
+      "url": "http://example.com/",
+      "depth": 0,
+      "etag": "\"5f2a\"",
+      "last_modified": "Mon, 02 Nov 2026 10:00:00 GMT",
+      "content_sha256": "9b74c9897bac770ffc029102a200c5de...",
+      "last_fetched_at": "2026-11-03T12:00:00+00:00",
+      "next_due_at": "2026-11-05T12:00:00+00:00",
+      "checks": 3,
+      "changes": 1,
+      "total_interval_seconds": 259200.0
+    }
+  ]
 }
 ```
 
