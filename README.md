@@ -137,6 +137,18 @@ Main `crawl` flags: `--seed` (repeatable), `--seeds-file`, `--output-dir`,
 `--max-retries`, `--backoff-base-seconds`, `--backoff-max-seconds`,
 `--user-agent`, `--ignore-robots`, `--checkpoint-every`, `--resume`.
 
+### Scoping a crawl (from `0.2.0`)
+
+```bash
+# Follow only links under the docs tree; everything else is skipped before it
+# reaches the frontier, so the page budget is spent where it was meant to be
+web-crawler-scheduler crawl --seed https://doc.rust-lang.org/book/ \
+  --allow-prefix https://doc.rust-lang.org/book/ --max-pages 200 --output-dir ./rust-book
+```
+
+`--allow-prefix` (repeatable; `CrawlConfig.allowed_url_prefixes`) is checked
+against the normalized URL of every outlink. Seeds are always crawled.
+
 ### Recrawling by change rate (from `0.2.0`)
 
 ```bash
