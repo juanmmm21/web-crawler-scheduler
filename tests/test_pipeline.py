@@ -293,3 +293,48 @@ class TestCrawlPipelineValidation:
                 tmp_path / "discarded.jsonl",
                 checkpoint_every=0,
             )
+
+
+class TestCrawlPipelineScope:
+    async def test_only_outlinks_inside_allowed_prefixes_are_followed(self, tmp_path: Path) -> None:
+        session = FakeClientSession(
+            {
+                "http://example.com/robots.txt": ROBOTS_ALLOW_ALL,
+                "http://example.com/docs/": FakeResponse(
+                    status=200,
+                    body=(
+                        '<a href="http://example.com/docs/intro">in scope</a>'
+                        '<a href="http://example.com/blog/post">other section</a>'
+                        '<a href="http://other.test/docs/x">other site</a>'
+                    ),
+                    final_url="http://example.com/docs/",
+                ),
+                "http://example.com/docs/intro": FakeResponse(
+                    status=200, body="intro", final_url="http://example.com/docs/intro"
+                ),
+            }
+        )
+        config = _config(
+            ("http://example.com/docs/",),
+            max_depth=2,
+            allowed_url_prefixes=("http://example.com/docs/",),
+        )
+        pages_path = tmp_path / "pages.jsonl"
+        async with CrawlPipeline(
+            config,
+            session,  # type: ignore[arg-type]
+            pages_path,
+            tmp_path / "link_graph.jsonl",
+            tmp_path / "discarded.jsonl",
+        ) as pipeline:
+            stats = await pipeline.run()
+
+        assert stats.pages_crawled == 2
+        assert {p["url"] for p in _read_jsonl(pages_path)} == {
+            "http://example.com/docs/",
+            "http://example.com/docs/intro",
+        }
+
+    def test_prefixes_must_be_absolute_urls(self) -> None:
+        with pytest.raises(ValueError):
+            _config(("http://example.com/",), allowed_url_prefixes=("example.com/docs",))

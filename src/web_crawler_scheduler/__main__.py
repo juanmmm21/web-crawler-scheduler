@@ -60,6 +60,13 @@ def _build_parser() -> argparse.ArgumentParser:
     crawl_parser.add_argument(
         "--ignore-robots", action="store_true", help="No respetar robots.txt (usar con cautela)"
     )
+    crawl_parser.add_argument(
+        "--allow-prefix",
+        action="append",
+        dest="allowed_prefixes",
+        default=[],
+        help="Solo sigue enlaces que empiezan por este prefijo de URL (repetible)",
+    )
     crawl_parser.add_argument("--checkpoint-every", type=int, default=50)
     crawl_parser.add_argument(
         "--resume",
@@ -212,6 +219,7 @@ def _run_crawl(args: argparse.Namespace) -> int:
         backoff_max_seconds=args.backoff_max_seconds,
         user_agent=args.user_agent,
         obey_robots_txt=not args.ignore_robots,
+        allowed_url_prefixes=tuple(args.allowed_prefixes),
     )
 
     output_dir: Path = args.output_dir

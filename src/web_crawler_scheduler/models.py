@@ -45,6 +45,11 @@ class CrawlConfig:
     backoff_max_seconds: float = 60.0
     user_agent: str = "BeaconCrawler/0.1 (+https://github.com/juanmmm21/web-crawler-scheduler)"
     obey_robots_txt: bool = True
+    allowed_url_prefixes: tuple[str, ...] = ()
+    """Ámbito del crawl: si no está vacío, solo se encolan outlinks cuya URL
+    normalizada empieza por alguno de estos prefijos (p. ej.
+    `https://doc.rust-lang.org/book/`). Sin ámbito, un crawl de documentación
+    gasta su presupuesto de páginas en cualquier sitio enlazado."""
 
     def __post_init__(self) -> None:
         if not self.seed_urls:
@@ -67,6 +72,10 @@ class CrawlConfig:
             raise ValueError("backoff_base_seconds debe ser positivo")
         if self.backoff_max_seconds < self.backoff_base_seconds:
             raise ValueError("backoff_max_seconds no puede ser menor que backoff_base_seconds")
+        if any(
+            not prefix.startswith(("http://", "https://")) for prefix in self.allowed_url_prefixes
+        ):
+            raise ValueError("allowed_url_prefixes deben ser URLs absolutas http(s)")
 
 
 @dataclass(frozen=True, slots=True)

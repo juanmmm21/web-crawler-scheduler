@@ -240,8 +240,11 @@ class CrawlPipeline:
             return []
 
     def _enqueue_outlinks(self, outlinks: list[str], parent_url: str, child_depth: int) -> None:
+        prefixes = self._config.allowed_url_prefixes
         for outlink in outlinks:
             normalized = normalize_url(outlink)
+            if prefixes and not normalized.startswith(prefixes):
+                continue
             if self._dedup.seen(normalized):
                 continue
             self._frontier.push(
