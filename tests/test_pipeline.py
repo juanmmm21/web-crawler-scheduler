@@ -338,3 +338,39 @@ class TestCrawlPipelineScope:
     def test_prefixes_must_be_absolute_urls(self) -> None:
         with pytest.raises(ValueError):
             _config(("http://example.com/",), allowed_url_prefixes=("example.com/docs",))
+
+
+class TestCrawlPipelineBudget:
+    async def test_max_pages_is_never_exceeded_with_concurrent_requests(
+        self, tmp_path: Path
+    ) -> None:
+        links = "".join(f'<a href="http://example.com/p{i}">p{i}</a>' for i in range(6))
+        responses = {
+            "http://example.com/robots.txt": ROBOTS_ALLOW_ALL,
+            "http://example.com/": FakeResponse(
+                status=200, body=links, final_url="http://example.com/"
+            ),
+        }
+        for i in range(6):
+            responses[f"http://example.com/p{i}"] = FakeResponse(
+                status=200, body=f"page {i}", final_url=f"http://example.com/p{i}"
+            )
+        config = _config(
+            ("http://example.com/",),
+            max_pages=3,
+            max_depth=1,
+            max_concurrent_requests=4,
+            max_concurrent_per_domain=4,
+        )
+        pages_path = tmp_path / "pages.jsonl"
+        async with CrawlPipeline(
+            config,
+            FakeClientSession(responses),  # type: ignore[arg-type]
+            pages_path,
+            tmp_path / "link_graph.jsonl",
+            tmp_path / "discarded.jsonl",
+        ) as pipeline:
+            stats = await pipeline.run()
+
+        assert stats.pages_crawled == 3
+        assert len(_read_jsonl(pages_path)) == 3

@@ -145,9 +145,13 @@ class CrawlPipeline:
 
         pending_tasks: set[asyncio.Task[None]] = set()
         while True:
+            # Las peticiones en vuelo cuentan contra el presupuesto: sin ellas,
+            # con N tareas concurrentes el crawl podía pasarse hasta N - 1
+            # páginas de `max_pages`. Una tarea que acaba descartada libera su
+            # hueco y el bucle lanza otra.
             while (
                 len(pending_tasks) < self._config.max_concurrent_requests
-                and self._pages_crawled < self._config.max_pages
+                and self._pages_crawled + len(pending_tasks) < self._config.max_pages
             ):
                 entry = self._frontier.pop()
                 if entry is None:
